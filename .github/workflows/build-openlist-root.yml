@@ -27,25 +27,20 @@ jobs:
           repository: openlistteam/openlist
           ref: main
 
-      # 第二步：魔改 Dockerfile，使用 sed 命令动态删除创建用户和切换用户的指令
+      # 第二步：魔改 Dockerfile
       - name: Patch Dockerfile for Root Access
         run: |
           echo "正在修改 Dockerfile 以移除普通用户限制..."
           
-          # 1. 删除 USER ${USER} 指令 (防止切换用户)
-          sed -i '/USER ${USER}/d' Dockerfile
-          
-          # 2. 删除 COPY 命令中的 --chown 参数 (让文件默认归 root 所有)
+          # 1. 删除 COPY 命令中的 --chown 参数让复制进来的文件默认归 root 所有
           sed -i 's/--chown=${UID}:${GID}//g' Dockerfile
           
-          # 3. 替换创建用户的 RUN 命令
-          # 原理：查找包含 addgroup 的行，替换为简单的创建目录命令
-          # 注意：这假设 addgroup 是该 RUN 指令的第一行
-          sed -i 's/RUN addgroup.*/RUN mkdir -p \/opt\/openlist\/data/' Dockerfile
+          # 2. 删除 USER ${USER} 指令防止容器在最后切换到普通用户
+          sed -i '/USER ${USER}/d' Dockerfile
           
-          # 4. 删除后续可能的 adduser 等行 (如果它们被分行写了)
-          # 这里的逻辑稍微粗暴一点，但对当前 Dockerfile 有效
-          # 如果不想太复杂，主要保证 USER 指令被删和 chown 被删即可
+          # 3. 使用 perl 替换多行 RUN 命令匹配从 "RUN addgroup" 开始直到 "mkdir" 之间的所有内容（跨行），
+          # 并将其整体替换为简单的 "RUN mkdir"
+          perl -i -0pe 's/RUN addgroup.*?mkdir/RUN mkdir/s' Dockerfile
           
           echo "Dockerfile 修改完成，内容预览："
           cat Dockerfile
