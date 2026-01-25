@@ -20,12 +20,14 @@ jobs:
       packages: write
 
     steps:
-      # 第一步：拉取官方上游代码保证每次构建都是基于官方最新的代码
+      # 第一步：拉取官方上游代码
       - name: Checkout Upstream Code
         uses: actions/checkout@v4
         with:
           repository: openlistteam/openlist
-          ref: main
+          ref: main 
+          fetch-depth: 0  
+          fetch-tags: true 
 
       # 第二步：魔改 Dockerfile
       - name: Patch Dockerfile for Root Access
