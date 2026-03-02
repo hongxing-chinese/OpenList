@@ -13,7 +13,72 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
+  # 检查上游是否有更新
+  check-updates:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      has-updates: ${{ steps.check.outputs.has-updates }}
+      current-sha: ${{ steps.check.outputs.current-sha }}
+    
+    steps:
+      - name: Get upstream latest commit
+        id: upstream
+        run: |
+          # 获取上游仓库 main 分支的最新 commit SHA
+          UPSTREAM_SHA=$(curl -s "https://api.github.com/repos/openlistteam/openlist/commits/main" | jq -r '.sha')
+          echo "sha=$UPSTREAM_SHA" >> $GITHUB_OUTPUT
+          echo "上游最新 commit: $UPSTREAM_SHA"
+      
+      - name: Get last built commit
+        id: last-built
+        run: |
+          # 获取上次成功运行此 workflow 的 commit SHA
+          LAST_SHA=$(curl -s \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "${{ github.api_url }}/repos/${{ github.repository }}/actions/workflows/build-openlist-root.yml/runs?status=success&per_page=1" \
+            | jq -r '.workflow_runs[0].head_sha // empty')
+          echo "sha=$LAST_SHA" >> $GITHUB_OUTPUT
+          echo "上次构建 commit: ${LAST_SHA:-无记录}"
+      
+      - name: Check if updates exist
+        id: check
+        run: |
+          UPSTREAM_SHA="${{ steps.upstream.outputs.sha }}"
+          LAST_SHA="${{ steps.last-built.outputs.sha }}"
+          
+          # 如果是手动触发，始终构建
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "手动触发，执行构建"
+            echo "has-updates=true" >> $GITHUB_OUTPUT
+            echo "current-sha=$UPSTREAM_SHA" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          # 如果没有上次构建记录，执行构建
+          if [[ -z "$LAST_SHA" ]]; then
+            echo "无上次构建记录，执行构建"
+            echo "has-updates=true" >> $GITHUB_OUTPUT
+            echo "current-sha=$UPSTREAM_SHA" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          # 比较 commit SHA
+          if [[ "$UPSTREAM_SHA" == "$LAST_SHA" ]]; then
+            echo "上游无新提交，跳过构建"
+            echo "has-updates=false" >> $GITHUB_OUTPUT
+          else
+            echo "上游有新提交，执行构建"
+            echo "has-updates=true" >> $GITHUB_OUTPUT
+            echo "current-sha=$UPSTREAM_SHA" >> $GITHUB_OUTPUT
+          fi
+
   build-and-push:
+    needs: check-updates
+    if: needs.check-updates.outputs.has-updates == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
