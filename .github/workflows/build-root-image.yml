@@ -1,0 +1,95 @@
+name: Build OpenList Root Image
+
+on:
+  # 仅支持手动触发工作流，避免频繁的无效构建
+  workflow_dispatch:
+
+env:
+  # 指定推送到 GitHub 官方的容器镜像注册表 (GHCR)
+  REGISTRY: ghcr.io
+  # 使用当前仓库的名称作为镜像名
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-and-push:
+    # 指定运行环境为最新版的 Ubuntu
+    runs-on: ubuntu-latest
+    # 配置权限：需要读取代码的权限，以及向 GHCR 写入(推送)镜像包的权限
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      # --- 步骤 1：获取上游最新代码 ---
+      - name: Checkout Upstream Code
+        uses: actions/checkout@v4
+        with:
+          # 指定拉取 openlist 官方主干仓库的代码，而不是当前 fork 仓库的代码
+          repository: openlistteam/openlist
+          ref: main 
+          # 获取所有历史记录和标签，这对于部分依赖 git 历史的构建可能是必要的
+          fetch-depth: 0  
+          fetch-tags: true 
+
+      # --- 步骤 2：生成上海时区的时间戳 ---
+      - name: Get Shanghai Date
+        id: date
+        run: |
+          # 将时区设置为亚洲/上海，并按 年.月.日 格式输出
+          SH_DATE=$(TZ='Asia/Shanghai' date +'%y.%m.%d')
+          # 将结果保存到 GitHub Actions 的输出变量中，供后续步骤引用
+          echo "today=$SH_DATE" >> $GITHUB_OUTPUT
+          echo "✅ 当前上海日期已获取: $SH_DATE"
+
+      # --- 步骤 3：修改 Dockerfile (提权/移除普通用户限制) ---
+      - name: Patch Dockerfile to Remove User Restrictions
+        run: |
+          echo "🔧 正在修改 Dockerfile 以移除普通用户限制..."
+          # 1. 删除所有改变文件所有者的指令 (--chown=${UID}:${GID})
+          sed -i 's/--chown=${UID}:${GID}//g' Dockerfile
+          # 2. 删除指定非 root 用户运行的指令 (USER ${USER})
+          sed -i '/USER ${USER}/d' Dockerfile
+          # 3. 移除创建用户组和用户的操作，直接只保留创建目录 (RUN mkdir)
+          perl -i -0pe 's/RUN addgroup.*?mkdir/RUN mkdir/s' Dockerfile
+          
+          echo "📄 修改后的 Dockerfile 内容如下："
+          cat Dockerfile
+
+      # --- 步骤 4：初始化 Docker 构建环境 ---
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # --- 步骤 5：登录到镜像仓库 ---
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # --- 步骤 6：生成镜像的标签 (Tags) 和元数据 (Labels) ---
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            # 标签 1 (latest)：永远指向最新一次成功构建的镜像
+            type=raw,value=latest
+
+            # 标签 2 (每日浮动)：例如 v26.05.08。如果同一天构建多次，会自动覆盖之前的，保持当天最新
+            type=raw,value=v${{ steps.date.outputs.today }}
+
+      # --- 步骤 7：执行构建并推送到仓库 ---
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          # 仅构建 amd64 架构的镜像，节省时间和资源
+          platforms: linux/amd64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # 禁用缓存，确保每次都是从头拉取最新代码进行干净构建
+          no-cache: true
+          provenance: false
